@@ -7,9 +7,26 @@ import {
 } from 'n8n-workflow';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { writeFileSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { writeFileSync, unlinkSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
 import { tmpdir } from 'os';
+
+// Find bsearch CLI - check local node_modules first, then global
+function findBsearchPath(): string {
+  const possiblePaths = [
+    join(__dirname, '..', '..', '..', 'node_modules', '.bin', 'bsearch'),
+    join(__dirname, '..', '..', '..', '..', 'node_modules', '.bin', 'bsearch'),
+  ];
+  
+  for (const p of possiblePaths) {
+    if (existsSync(p)) return p;
+  }
+  
+  // Fallback to global install
+  return 'bsearch';
+}
+
+const bsearchPath = findBsearchPath();
 
 const execAsync = promisify(exec);
 
@@ -215,7 +232,7 @@ export class Bsearch implements INodeType {
       writeFileSync(envFile, `BRAVE_API_KEY=${apiKey}`);
 
       try {
-        const cmd = `BRAVE_API_KEY_FILE=${envFile} bsearch ${args.join(' ')}`;
+        const cmd = `BRAVE_API_KEY_FILE=${envFile} ${bsearchPath} ${args.join(' ')}`;
         const { stdout } = await execAsync(cmd);
 
         const result = JSON.parse(stdout);

@@ -1,96 +1,26 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Bsearch = void 0;
-// Helper functions outside class
-async function performWebSearch(query, apiKey, count, safesearch, freshness, offset) {
-    var _a, _b, _c;
-    const url = new URL('https://api.search.brave.com/res/v1/web/search');
-    url.searchParams.append('q', query);
-    url.searchParams.append('count', count.toString());
-    url.searchParams.append('safesearch', safesearch);
-    if (freshness)
-        url.searchParams.append('freshness', freshness);
-    if (offset > 0)
-        url.searchParams.append('offset', offset.toString());
-    const response = await fetch(url.toString(), {
-        headers: {
-            'X-Subscription-Token': apiKey,
-            'Accept': 'application/json',
-        },
-    });
-    if (!response.ok) {
-        const msgs = { 401: 'Invalid API key', 429: 'Rate limited', 500: 'Server error' };
-        throw new Error(msgs[response.status] || `API error ${response.status}`);
+const child_process_1 = require("child_process");
+const util_1 = require("util");
+const fs_1 = require("fs");
+const path_1 = require("path");
+const os_1 = require("os");
+// Find bsearch CLI - check local node_modules first, then global
+function findBsearchPath() {
+    const possiblePaths = [
+        (0, path_1.join)(__dirname, '..', '..', '..', 'node_modules', '.bin', 'bsearch'),
+        (0, path_1.join)(__dirname, '..', '..', '..', '..', 'node_modules', '.bin', 'bsearch'),
+    ];
+    for (const p of possiblePaths) {
+        if ((0, fs_1.existsSync)(p))
+            return p;
     }
-    const data = await response.json();
-    const results = ((_a = data.web) === null || _a === void 0 ? void 0 : _a.results) || [];
-    return {
-        query,
-        totalResults: ((_c = (_b = data.web) === null || _b === void 0 ? void 0 : _b.total) === null || _c === void 0 ? void 0 : _c.results) || results.length,
-        results: results.map((r) => ({
-            title: r.title,
-            url: r.url,
-            description: r.description,
-            age: r.age,
-        })),
-        raw: data,
-    };
+    // Fallback to global install
+    return 'bsearch';
 }
-async function performLlmContext(query, apiKey, count, maxTokens, maxUrls, maxSnippets, threshold, location) {
-    var _a;
-    const url = new URL('https://api.search.brave.com/res/v1/llm/context');
-    url.searchParams.append('q', query);
-    url.searchParams.append('count', count.toString());
-    url.searchParams.append('maximum_number_of_tokens', maxTokens.toString());
-    url.searchParams.append('maximum_number_of_urls', maxUrls.toString());
-    url.searchParams.append('maximum_number_of_snippets', maxSnippets.toString());
-    url.searchParams.append('context_threshold_mode', threshold);
-    const headers = {
-        'X-Subscription-Token': apiKey,
-        'Accept': 'application/json',
-        'cache-control': 'no-cache',
-    };
-    // Add location headers if provided
-    if (location.lat)
-        headers['X-Loc-Lat'] = location.lat.toString();
-    if (location.long)
-        headers['X-Loc-Long'] = location.long.toString();
-    if (location.city)
-        headers['X-Loc-City'] = location.city;
-    if (location.country)
-        headers['X-Loc-Country'] = location.country;
-    const response = await fetch(url.toString(), { headers });
-    if (!response.ok) {
-        if (response.status === 401)
-            throw new Error('Invalid API key');
-        if (response.status === 429)
-            throw new Error('Rate limited');
-        if (response.status === 403 || response.status === 400) {
-            const errorText = await response.text();
-            if (errorText.includes('OPTION_NOT_IN_PLAN') || errorText.includes('not subscribed')) {
-                throw new Error('LLM Context not available in your Brave Search plan. Use Web Search mode instead.');
-            }
-        }
-        throw new Error(`API error ${response.status}`);
-    }
-    const data = await response.json();
-    const grounding = data.grounding || {};
-    return {
-        query,
-        sources: ((_a = grounding.generic) === null || _a === void 0 ? void 0 : _a.map((item) => ({
-            title: item.title,
-            url: item.url,
-            snippets: item.snippets,
-        }))) || [],
-        poi: grounding.poi ? {
-            name: grounding.poi.name,
-            url: grounding.poi.url,
-            snippets: grounding.poi.snippets,
-        } : null,
-        mapResults: grounding.map || [],
-        raw: data,
-    };
-}
+const bsearchPath = findBsearchPath();
+const execAsync = (0, util_1.promisify)(child_process_1.exec);
 class Bsearch {
     constructor() {
         this.description = {
@@ -99,17 +29,21 @@ class Bsearch {
             icon: 'fa:search',
             group: ['output'],
             version: 1,
-            description: 'Web search using Brave Search API with LLM Context support',
+            description: 'Web search using bsearch CLI - configure API key in node settings',
             defaults: { name: 'Brave Search' },
             inputs: ['main'],
             outputs: ['main'],
-            credentials: [
-                {
-                    name: 'bsearchApi',
-                    required: true,
-                },
-            ],
             properties: [
+                // API Key in Settings
+                {
+                    displayName: 'API Key',
+                    name: 'apiKey',
+                    type: 'string',
+                    typeOptions: { password: true },
+                    default: '',
+                    required: true,
+                    description: 'Brave Search API key (from brave.com/search/api). Set in node settings.',
+                },
                 {
                     displayName: 'Search Mode',
                     name: 'mode',
@@ -119,7 +53,6 @@ class Bsearch {
                         { name: 'Web Search', value: 'web', description: 'Classic web search with links' },
                     ],
                     default: 'llm',
-                    description: 'Search mode: LLM Context (AI-optimized) or classic Web Search',
                 },
                 {
                     displayName: 'Query',
@@ -136,7 +69,6 @@ class Bsearch {
                     type: 'number',
                     typeOptions: { minValue: 1, maxValue: 50 },
                     default: 20,
-                    description: 'Number of search results (1-50)',
                 },
                 {
                     displayName: 'Safe Search',
@@ -156,7 +88,6 @@ class Bsearch {
                     type: 'string',
                     default: '',
                     displayOptions: { show: { mode: ['web'] } },
-                    description: 'Filter by date: pd (day), pw (week), pm (month), py (year), or YYYY-MM-DDtoYYYY-MM-DD',
                     placeholder: 'e.g. pw',
                 },
                 {
@@ -165,9 +96,7 @@ class Bsearch {
                     type: 'number',
                     default: 0,
                     displayOptions: { show: { mode: ['web'] } },
-                    description: 'Pagination offset for web search',
                 },
-                // LLM Context Options
                 {
                     displayName: 'Max Tokens',
                     name: 'maxTokens',
@@ -175,7 +104,6 @@ class Bsearch {
                     typeOptions: { minValue: 1024, maxValue: 32768 },
                     default: 8192,
                     displayOptions: { show: { mode: ['llm'] } },
-                    description: 'Max tokens in context (1024-32768)',
                 },
                 {
                     displayName: 'Max URLs',
@@ -184,7 +112,6 @@ class Bsearch {
                     typeOptions: { minValue: 1, maxValue: 50 },
                     default: 20,
                     displayOptions: { show: { mode: ['llm'] } },
-                    description: 'Max URLs in response (1-50)',
                 },
                 {
                     displayName: 'Max Snippets',
@@ -193,7 +120,6 @@ class Bsearch {
                     typeOptions: { minValue: 1, maxValue: 100 },
                     default: 50,
                     displayOptions: { show: { mode: ['llm'] } },
-                    description: 'Max snippets total (1-100)',
                 },
                 {
                     displayName: 'Context Threshold',
@@ -207,9 +133,7 @@ class Bsearch {
                     ],
                     default: 'balanced',
                     displayOptions: { show: { mode: ['llm'] } },
-                    description: 'Context threshold mode',
                 },
-                // Location Options
                 {
                     displayName: 'Location',
                     name: 'location',
@@ -222,16 +146,14 @@ class Bsearch {
                             name: 'lat',
                             type: 'number',
                             typeOptions: { numberPrecision: 6 },
-                            default: undefined,
-                            description: 'Latitude (-90 to 90)',
+                            default: 0,
                         },
                         {
                             displayName: 'Longitude',
                             name: 'long',
                             type: 'number',
                             typeOptions: { numberPrecision: 6 },
-                            default: undefined,
-                            description: 'Longitude (-180 to 180)',
+                            default: 0,
                         },
                         {
                             displayName: 'City',
@@ -254,33 +176,74 @@ class Bsearch {
     async execute() {
         const items = this.getInputData();
         const returnData = [];
+        // Get API key from node settings (first item or node settings)
+        const apiKey = this.getNodeParameter('apiKey', 0) || '';
+        if (!apiKey) {
+            throw new Error('Brave Search API key not configured. Set it in the node settings.');
+        }
         for (let i = 0; i < items.length; i++) {
             const query = this.getNodeParameter('query', i);
             const mode = this.getNodeParameter('mode', i);
             const count = this.getNodeParameter('count', i);
             const location = this.getNodeParameter('location', i);
-            const credentials = await this.getCredentials('bsearchApi');
-            const apiKey = credentials.apiKey;
-            if (!apiKey) {
-                throw new Error('Brave Search API key not configured');
-            }
-            let result;
+            // Build bsearch command
+            const args = [query];
             if (mode === 'web') {
+                args.push('--web');
                 const safesearch = this.getNodeParameter('safesearch', i);
+                if (safesearch !== 'off')
+                    args.push('--safesearch', safesearch);
                 const freshness = this.getNodeParameter('freshness', i);
+                if (freshness)
+                    args.push('--freshness', freshness);
                 const offset = this.getNodeParameter('offset', i);
-                result = await performWebSearch(query, apiKey, count, safesearch, freshness, offset);
+                if (offset > 0)
+                    args.push('--offset', offset.toString());
             }
             else {
-                const maxTokens = this.getNodeParameter('maxTokens', i);
-                const maxUrls = this.getNodeParameter('maxUrls', i);
-                const maxSnippets = this.getNodeParameter('maxSnippets', i);
-                const threshold = this.getNodeParameter('threshold', i);
-                result = await performLlmContext(query, apiKey, count, maxTokens, maxUrls, maxSnippets, threshold, location);
+                args.push('--llm');
+                args.push('--count', count.toString());
+                args.push('--max-tokens', this.getNodeParameter('maxTokens', i).toString());
+                args.push('--max-urls', this.getNodeParameter('maxUrls', i).toString());
+                args.push('--max-snippets', this.getNodeParameter('maxSnippets', i).toString());
+                args.push('--threshold', this.getNodeParameter('threshold', i));
             }
-            returnData.push({
-                json: result,
-            });
+            // Location params
+            if (location.lat)
+                args.push('--lat', location.lat.toString());
+            if (location.long)
+                args.push('--long', location.long.toString());
+            if (location.city)
+                args.push('--city', location.city);
+            if (location.country)
+                args.push('--country', location.country);
+            // Raw JSON output
+            args.push('--raw');
+            // Create temp env file with API key
+            const envFile = (0, path_1.join)((0, os_1.tmpdir)(), `bsearch_env_${Date.now()}.txt`);
+            (0, fs_1.writeFileSync)(envFile, `BRAVE_API_KEY=${apiKey}`);
+            try {
+                const cmd = `BRAVE_API_KEY_FILE=${envFile} ${bsearchPath} ${args.join(' ')}`;
+                const { stdout } = await execAsync(cmd);
+                const result = JSON.parse(stdout);
+                returnData.push({
+                    json: {
+                        query,
+                        mode,
+                        ...result,
+                    },
+                });
+            }
+            catch (error) {
+                throw new Error(`bsearch CLI error: ${error.message}`);
+            }
+            finally {
+                // Cleanup temp file
+                try {
+                    (0, fs_1.unlinkSync)(envFile);
+                }
+                catch { }
+            }
         }
         return [returnData];
     }
