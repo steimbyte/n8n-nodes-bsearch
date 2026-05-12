@@ -11,7 +11,7 @@
   "license": "MIT",
   "main": "dist/index.js",
   "bin": {
-    "bsearch": "node_modules/brave-search-cli/index.js"
+    "bsearch": "node_modules/@steimbyte/bsearch-cli/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -27,7 +27,7 @@
     ]
   },
   "dependencies": {
-    "brave-search-cli": "*"
+    "@steimbyte/bsearch-cli": "github:steimbyte/bsearch-cli#v0.2.3"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
