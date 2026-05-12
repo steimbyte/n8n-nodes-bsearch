@@ -10,6 +10,9 @@
   ],
   "license": "MIT",
   "main": "dist/index.js",
+  "bin": {
+    "bsearch": "node_modules/brave-search-cli/index.js"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc -w"
@@ -25,6 +28,9 @@
     "credentials": [
       "dist/nodes/Bsearch/BsearchApi.credentials.js"
     ]
+  },
+  "dependencies": {
+    "brave-search-cli": "*"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
