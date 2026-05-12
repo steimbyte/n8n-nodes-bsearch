@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-bsearch",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Brave Search API node for n8n - Web search and LLM Context",
   "keywords": [
     "n8n-community-node-package",
