@@ -5,114 +5,13 @@ import {
   NodeOutput,
   INodeExecutionData,
 } from 'n8n-workflow';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
-// Helper functions outside class
-async function performWebSearch(
-  query: string,
-  apiKey: string,
-  count: number,
-  safesearch: string,
-  freshness: string,
-  offset: number
-): Promise<any> {
-  const url = new URL('https://api.search.brave.com/res/v1/web/search');
-  url.searchParams.append('q', query);
-  url.searchParams.append('count', count.toString());
-  url.searchParams.append('safesearch', safesearch);
-  if (freshness) url.searchParams.append('freshness', freshness);
-  if (offset > 0) url.searchParams.append('offset', offset.toString());
-
-  const response = await fetch(url.toString(), {
-    headers: {
-      'X-Subscription-Token': apiKey,
-      'Accept': 'application/json',
-    },
-  });
-
-  if (!response.ok) {
-    const msgs: Record<number, string> = { 401: 'Invalid API key', 429: 'Rate limited', 500: 'Server error' };
-    throw new Error(msgs[response.status] || `API error ${response.status}`);
-  }
-
-  const data = await response.json() as any;
-  const results = data.web?.results || [];
-
-  return {
-    query,
-    totalResults: data.web?.total?.results || results.length,
-    results: results.map((r: any) => ({
-      title: r.title,
-      url: r.url,
-      description: r.description,
-      age: r.age,
-    })),
-    raw: data,
-  };
-}
-
-async function performLlmContext(
-  query: string,
-  apiKey: string,
-  count: number,
-  maxTokens: number,
-  maxUrls: number,
-  maxSnippets: number,
-  threshold: string,
-  location: Record<string, any>
-): Promise<any> {
-  const url = new URL('https://api.search.brave.com/res/v1/llm/context');
-  url.searchParams.append('q', query);
-  url.searchParams.append('count', count.toString());
-  url.searchParams.append('maximum_number_of_tokens', maxTokens.toString());
-  url.searchParams.append('maximum_number_of_urls', maxUrls.toString());
-  url.searchParams.append('maximum_number_of_snippets', maxSnippets.toString());
-  url.searchParams.append('context_threshold_mode', threshold);
-
-  const headers: Record<string, string> = {
-    'X-Subscription-Token': apiKey,
-    'Accept': 'application/json',
-    'cache-control': 'no-cache',
-  };
-
-  // Add location headers if provided
-  if (location.lat) headers['X-Loc-Lat'] = location.lat.toString();
-  if (location.long) headers['X-Loc-Long'] = location.long.toString();
-  if (location.city) headers['X-Loc-City'] = location.city;
-  if (location.country) headers['X-Loc-Country'] = location.country;
-
-  const response = await fetch(url.toString(), { headers });
-
-  if (!response.ok) {
-    if (response.status === 401) throw new Error('Invalid API key');
-    if (response.status === 429) throw new Error('Rate limited');
-    if (response.status === 403 || response.status === 400) {
-      const errorText = await response.text();
-      if (errorText.includes('OPTION_NOT_IN_PLAN') || errorText.includes('not subscribed')) {
-        throw new Error('LLM Context not available in your Brave Search plan. Use Web Search mode instead.');
-      }
-    }
-    throw new Error(`API error ${response.status}`);
-  }
-
-  const data = await response.json() as any;
-  const grounding = data.grounding || {};
-
-  return {
-    query,
-    sources: grounding.generic?.map((item: any) => ({
-      title: item.title,
-      url: item.url,
-      snippets: item.snippets,
-    })) || [],
-    poi: grounding.poi ? {
-      name: grounding.poi.name,
-      url: grounding.poi.url,
-      snippets: grounding.poi.snippets,
-    } : null,
-    mapResults: grounding.map || [],
-    raw: data,
-  };
-}
+const execAsync = promisify(exec);
 
 export class Bsearch implements INodeType {
   description: INodeTypeDescription = {
@@ -121,17 +20,21 @@ export class Bsearch implements INodeType {
     icon: 'fa:search',
     group: ['output'],
     version: 1,
-    description: 'Web search using Brave Search API with LLM Context support',
+    description: 'Web search using bsearch CLI - configure API key in node settings',
     defaults: { name: 'Brave Search' },
     inputs: ['main'],
     outputs: ['main'],
-    credentials: [
-      {
-        name: 'bsearchApi',
-        required: true,
-      },
-    ],
     properties: [
+      // API Key in Settings
+      {
+        displayName: 'API Key',
+        name: 'apiKey',
+        type: 'string',
+        typeOptions: { password: true },
+        default: '',
+        required: true,
+        description: 'Brave Search API key (from brave.com/search/api). Set in node settings.',
+      },
       {
         displayName: 'Search Mode',
         name: 'mode',
@@ -141,7 +44,6 @@ export class Bsearch implements INodeType {
           { name: 'Web Search', value: 'web', description: 'Classic web search with links' },
         ],
         default: 'llm',
-        description: 'Search mode: LLM Context (AI-optimized) or classic Web Search',
       },
       {
         displayName: 'Query',
@@ -158,7 +60,6 @@ export class Bsearch implements INodeType {
         type: 'number',
         typeOptions: { minValue: 1, maxValue: 50 },
         default: 20,
-        description: 'Number of search results (1-50)',
       },
       {
         displayName: 'Safe Search',
@@ -178,7 +79,6 @@ export class Bsearch implements INodeType {
         type: 'string',
         default: '',
         displayOptions: { show: { mode: ['web'] } },
-        description: 'Filter by date: pd (day), pw (week), pm (month), py (year), or YYYY-MM-DDtoYYYY-MM-DD',
         placeholder: 'e.g. pw',
       },
       {
@@ -187,9 +87,7 @@ export class Bsearch implements INodeType {
         type: 'number',
         default: 0,
         displayOptions: { show: { mode: ['web'] } },
-        description: 'Pagination offset for web search',
       },
-      // LLM Context Options
       {
         displayName: 'Max Tokens',
         name: 'maxTokens',
@@ -197,7 +95,6 @@ export class Bsearch implements INodeType {
         typeOptions: { minValue: 1024, maxValue: 32768 },
         default: 8192,
         displayOptions: { show: { mode: ['llm'] } },
-        description: 'Max tokens in context (1024-32768)',
       },
       {
         displayName: 'Max URLs',
@@ -206,7 +103,6 @@ export class Bsearch implements INodeType {
         typeOptions: { minValue: 1, maxValue: 50 },
         default: 20,
         displayOptions: { show: { mode: ['llm'] } },
-        description: 'Max URLs in response (1-50)',
       },
       {
         displayName: 'Max Snippets',
@@ -215,7 +111,6 @@ export class Bsearch implements INodeType {
         typeOptions: { minValue: 1, maxValue: 100 },
         default: 50,
         displayOptions: { show: { mode: ['llm'] } },
-        description: 'Max snippets total (1-100)',
       },
       {
         displayName: 'Context Threshold',
@@ -229,9 +124,7 @@ export class Bsearch implements INodeType {
         ],
         default: 'balanced',
         displayOptions: { show: { mode: ['llm'] } },
-        description: 'Context threshold mode',
       },
-      // Location Options
       {
         displayName: 'Location',
         name: 'location',
@@ -244,16 +137,14 @@ export class Bsearch implements INodeType {
             name: 'lat',
             type: 'number',
             typeOptions: { numberPrecision: 6 },
-            default: undefined,
-            description: 'Latitude (-90 to 90)',
+            default: 0,
           },
           {
             displayName: 'Longitude',
             name: 'long',
             type: 'number',
             typeOptions: { numberPrecision: 6 },
-            default: undefined,
-            description: 'Longitude (-180 to 180)',
+            default: 0,
           },
           {
             displayName: 'City',
@@ -277,37 +168,71 @@ export class Bsearch implements INodeType {
     const items = this.getInputData();
     const returnData: INodeExecutionData[] = [];
 
+    // Get API key from node settings (first item or node settings)
+    const apiKey = (this.getNodeParameter('apiKey', 0) as string) || '';
+
+    if (!apiKey) {
+      throw new Error('Brave Search API key not configured. Set it in the node settings.');
+    }
+
     for (let i = 0; i < items.length; i++) {
       const query = this.getNodeParameter('query', i) as string;
       const mode = this.getNodeParameter('mode', i) as string;
       const count = this.getNodeParameter('count', i) as number;
       const location = this.getNodeParameter('location', i) as Record<string, any>;
 
-      const credentials = await this.getCredentials('bsearchApi');
-      const apiKey = credentials.apiKey as string;
-
-      if (!apiKey) {
-        throw new Error('Brave Search API key not configured');
-      }
-
-      let result: any;
+      // Build bsearch command
+      const args = [query];
 
       if (mode === 'web') {
+        args.push('--web');
         const safesearch = this.getNodeParameter('safesearch', i) as string;
+        if (safesearch !== 'off') args.push('--safesearch', safesearch);
         const freshness = this.getNodeParameter('freshness', i) as string;
+        if (freshness) args.push('--freshness', freshness);
         const offset = this.getNodeParameter('offset', i) as number;
-        result = await performWebSearch(query, apiKey, count, safesearch, freshness, offset);
+        if (offset > 0) args.push('--offset', offset.toString());
       } else {
-        const maxTokens = this.getNodeParameter('maxTokens', i) as number;
-        const maxUrls = this.getNodeParameter('maxUrls', i) as number;
-        const maxSnippets = this.getNodeParameter('maxSnippets', i) as number;
-        const threshold = this.getNodeParameter('threshold', i) as string;
-        result = await performLlmContext(query, apiKey, count, maxTokens, maxUrls, maxSnippets, threshold, location);
+        args.push('--llm');
+        args.push('--count', count.toString());
+        args.push('--max-tokens', (this.getNodeParameter('maxTokens', i) as number).toString());
+        args.push('--max-urls', (this.getNodeParameter('maxUrls', i) as number).toString());
+        args.push('--max-snippets', (this.getNodeParameter('maxSnippets', i) as number).toString());
+        args.push('--threshold', this.getNodeParameter('threshold', i) as string);
       }
 
-      returnData.push({
-        json: result,
-      } as INodeExecutionData);
+      // Location params
+      if (location.lat) args.push('--lat', location.lat.toString());
+      if (location.long) args.push('--long', location.long.toString());
+      if (location.city) args.push('--city', location.city);
+      if (location.country) args.push('--country', location.country);
+
+      // Raw JSON output
+      args.push('--raw');
+
+      // Create temp env file with API key
+      const envFile = join(tmpdir(), `bsearch_env_${Date.now()}.txt`);
+      writeFileSync(envFile, `BRAVE_API_KEY=${apiKey}`);
+
+      try {
+        const cmd = `BRAVE_API_KEY_FILE=${envFile} bsearch ${args.join(' ')}`;
+        const { stdout } = await execAsync(cmd);
+
+        const result = JSON.parse(stdout);
+
+        returnData.push({
+          json: {
+            query,
+            mode,
+            ...result,
+          },
+        } as INodeExecutionData);
+      } catch (error: any) {
+        throw new Error(`bsearch CLI error: ${error.message}`);
+      } finally {
+        // Cleanup temp file
+        try { unlinkSync(envFile); } catch {}
+      }
     }
 
     return [returnData];
