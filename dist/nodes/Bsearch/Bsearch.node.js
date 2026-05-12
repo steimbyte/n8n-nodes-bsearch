@@ -9,13 +9,22 @@ const os_1 = require("os");
 // Find bsearch CLI - check local node_modules first, then global
 function findBsearchPath() {
     const possiblePaths = [
+        // n8n-nodes-bsearch/node_modules/.bin/bsearch
         (0, path_1.join)(__dirname, '..', '..', '..', 'node_modules', '.bin', 'bsearch'),
-        (0, path_1.join)(__dirname, '..', '..', '..', '..', 'node_modules', '.bin', 'bsearch'),
+        // n8n/node_modules/.bin/bsearch
+        (0, path_1.join)(__dirname, '..', '..', '..', '..', '..', 'node_modules', '.bin', 'bsearch'),
+        // Direct from @steimbyte/bsearch-cli
+        (0, path_1.join)(__dirname, '..', '..', '..', 'node_modules', '@steimbyte', 'bsearch-cli', 'index.js'),
+        // n8n-nodes-bsearch/node_modules/@steimbyte/bsearch-cli/index.js
+        (0, path_1.join)(__dirname, '..', '..', '..', '..', 'node_modules', '@steimbyte', 'bsearch-cli', 'index.js'),
     ];
     for (const p of possiblePaths) {
-        if ((0, fs_1.existsSync)(p))
+        if ((0, fs_1.existsSync)(p)) {
+            console.log('[bsearch] Found CLI at:', p);
             return p;
+        }
     }
+    console.log('[bsearch] WARNING: bsearch CLI not found in local node_modules, using global');
     // Fallback to global install
     return 'bsearch';
 }
